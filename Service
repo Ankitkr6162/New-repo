@@ -1,0 +1,231 @@
+package analytics;
+
+import analytics.rcp.UdsMeasures;
+import analytics.rcp.dao.HedisRightChartPanelDao;
+import analytics.rcp.model.MainBody;
+import analytics.rcp.model.Measure;
+import analytics.rcp.model.Program;
+import analytics.rcp.model.RecordId;
+import analytics.rcp.model.SupportingFact;
+import com.ecw.ihelogging.Logger;
+import com.google.gson.GsonBuilder;
+import java.util.List;
+import java.util.UUID;
+import orderset.Util;
+
+/**
+ * HedisRightChartPanel
+ *
+ * <p>Generates JSON String for displaying on Right Chart Panel
+ *
+ * @author Joshua.Gutowski
+ * @version 1.0
+ * @since June 28, 2017
+ */
+public class HedisRightChartPanel {
+
+  private static final int PERCENTAGE_MULTIPLIER = 100;
+  private static final int MISSING_DATA = 0;
+  private static final int COMPLIANT = 1;
+  private static final int NON_COMPLIANT = 2;
+  private static final int EXCLUDED = 3;
+  private final HedisRightChartPanelDao dao;
+
+   private   UdsMeasures udsMeasures;
+
+  public HedisRightChartPanel() {
+    dao = new HedisRightChartPanelDao();
+    udsMeasures = new UdsMeasures();
+
+  }
+
+  public HedisRightChartPanel(HedisRightChartPanelDao dao) {
+    this.dao = dao;
+    this.udsMeasures = udsMeasures;
+  }
+
+
+  /**
+   * Calculates the quality score
+   *
+   * @param programs A list of programs
+   * @return Returns a float calculation of the quality score
+   */
+  private String calculateQualityScore(List<Program> programs) {
+    StringBuilder result = new StringBuilder();
+    int total = 0;
+    int met = 0;
+    for (Program program : programs) {
+      total += program.getTotalMeasureCount();
+      met += program.getMetMeasureCount();
+    }
+    if (total == 0) {
+      result.append("0");
+    } else {
+      result.append(String.format("%2.0f", ((float) met / total) * PERCENTAGE_MULTIPLIER));
+    }
+    result.append("%");
+    return result.toString();
+  }
+
+  /**
+   * Generates a JSON String for a patient id, checks viewOnRightChart flag in cqm_measures table
+   *
+   * @param patientId Patient id to generate JSON for
+   * @return Returns a JSON String
+   */
+  public String generate(int patientId) {
+    return generate(dao.getMaxBatchId(), patientId, true, UUID.randomUUID().toString());
+  }
+
+  /**
+   * Generates a JSON String for a patient id
+   *
+   * @param patientId Patient id to generate JSON for
+   * @param checkRcp  boolean to check for viewOnRightCHart flag in cqm_measures
+   * @return Returns a JSON String
+   */
+  public String generate(int patientId, boolean checkRcp) {
+    return generate(dao.getMaxBatchId(), patientId, checkRcp, UUID.randomUUID().toString());
+  }
+
+  /**
+   * Generates a JSON String for a patient id, checks viewOnRightChart flag in cqm_measures table
+   *
+   * @param batchId   The batchId to generate JSON for
+   * @param patientId Patient id to generate JSON for
+   * @return Returns a JSON String
+   */
+  public String generate(int batchId, int patientId) {
+    return generate(batchId, patientId, true, UUID.randomUUID().toString());
+  }
+
+  /**
+   * Generates a JSON String for a patient id
+   *
+   * @param batchId   The batchId to generate JSON for
+   * @param patientId Patient id to generate JSON for
+   * @param checkRcp  boolean to check for viewOnRightChart flag in cqm_measures
+   * @return Returns a JSON String
+   */
+  public String generate(
+          int batchId, int patientId, boolean checkRcp, String jsonId, boolean forToDo) {
+    StringBuilder query = new StringBuilder();
+    query.append("SELECT DISTINCT ml.measure_id, ml.measure_description, CASE WHEN ")
+            .append("pd.e_denominator = 'EXMckhB5qTRqik0MZxSW9Q==' THEN 1 ELSE 0 END AS denominator, ")
+            .append("CASE WHEN pd.e_numerator = 'EXMckhB5qTRqik0MZxSW9Q==' THEN 1 ELSE 0 END AS ")
+            .append("numerator, CASE WHEN pd.e_denominator = '7poGHI70rNg+FHUPBKIZuA==' AND ")
+            .append("pd.e_numerator = '7poGHI70rNg+FHUPBKIZuA==' THEN 1 ELSE 0 END AS exclusion, ")
+            .append(
+                    "m.ordersetEncId, m.osSelectionType, os.description, i.itemName FROM phm_patientData pd INNER JOIN phm_reportData rd ")
+            .append("ON rd.id = pd.reportData_id INNER JOIN phm_measures_list ml ")
+            .append("ON ml.measure_id = rd.measure_id INNER JOIN cqm_measures m ")
+            .append("ON m.measureId = rd.measure_id ");
+    if (checkRcp) {
+      query.append("AND m.viewOnRightChart = 1 ");
+    }
+    query.append("LEFT JOIN ordersets os ON os.encounterId = m.ordersetEncId AND m.osSelectionType = 'orderset' ")
+            .append("LEFT JOIN items i ON i.itemId = m.ordersetEncId AND (m.osSelectionType = 'lab' OR m.osSelectionType = 'di' OR m.osSelectionType = 'procedure') ")
+            .append("WHERE rd.batchId = ? AND pd.patient_id = ? AND ml.measure_category = ?");
+    if (forToDo) {
+      query.append(" AND pd.e_denominator = 'EXMckhB5qTRqik0MZxSW9Q==' AND pd.e_numerator = 'bUFzIt4adwGzx68t4Pfq6Q==' ");
+    }
+
+    MainBody mainBody = generateMainBody(patientId, jsonId);
+
+    List<Program> programs = dao.generatePrograms(batchId);
+    for (Program program : programs) {
+      List<Measure> measures = dao
+              .generateMeasures(patientId, batchId, program.getName(), query.toString(), new Util());
+      program.setTotalMeasureCount(measures.size());
+      if (program.getTotalMeasureCount() > 0) {
+        program.setMeasures(measures);
+        program.setMetMeasureCount(getMetMeasureCount(measures));
+        mainBody.addProgram(program);
+      }
+
+      for (Measure measure : measures) {
+        List<SupportingFact> supportingFacts = dao
+                .generateMeasureSupportingFacts(patientId, batchId, measure);
+        measure.setSupportingFacts(supportingFacts);
+      }
+    }
+    mainBody.setQualityScore(calculateQualityScore(programs));
+
+    RecordId recordId = new RecordId(String.valueOf(batchId), String.valueOf(patientId));
+    mainBody.addRecordId(recordId);
+
+    String response = new GsonBuilder()
+            .excludeFieldsWithoutExposeAnnotation()
+            .serializeNulls()
+            .create()
+            .toJson(mainBody);
+    Logger.debug(HedisRightChartPanel.class.getSimpleName(), response);
+    response = new servlet.SplCharacterHelper().stripControlAndSpecialCharacter(response,
+            "HedisRightChartPanel", "HedisRightChartPanel.java");
+    return response;
+  }
+
+  /**
+   * Generates the MainBody Object for a given patient id
+   *
+   * @param patientId The patient identifier to generate a main body for
+   * @return Returns a MainBody model
+   */
+  private MainBody generateMainBody(int patientId, String jsonId) {
+    MainBody mainBody = new MainBody();
+    mainBody.setId(jsonId);
+    dao.setUserInfo(patientId, mainBody);
+    dao.setBatchInfo(mainBody, dao.getMaxBatchId());
+    return mainBody;
+  }
+
+  public int getMeasureStatus(String measureId, int patientId) {
+    int batchId = dao.getMaxBatchId();
+    switch(dao.getPatientComplianceStatus(batchId, patientId, measureId)) {
+      case "ACHIEVED":
+        return COMPLIANT;
+      case "NOT_ACHIEVED":
+        return NON_COMPLIANT;
+      case "EXCLUDED":
+        return EXCLUDED;
+      default:
+        return MISSING_DATA;
+    }
+  }
+
+  /**
+   * Counts the number of compliant measures
+   *
+   * @param measures List of Measures to check for compliance
+   * @return Returns the count of compliant measures
+   */
+  private int getMetMeasureCount(List<Measure> measures) {
+    int count = 0;
+    for (Measure measure : measures) {
+      if ("ACHIEVED".equals(measure.getOutcome())) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  public String generate(boolean gapsOnly, int patientId) {
+//    return generate(dao.getMaxBatchId(), patientId, true, UUID.randomUUID().toString(), gapsOnly);
+    return generate(true,patientId,true);
+  }
+
+  public String generate(int batchId, int patientId, boolean checkRcp, String jsonId) {
+    return generate(batchId, patientId, checkRcp, jsonId, false);
+  }
+
+  public String generate(boolean gapsOnly, int patientId, boolean sourceIsPrismaInsight) {
+      if (sourceIsPrismaInsight) {
+          return udsMeasures.getUdsMeasures(gapsOnly, patientId);
+      }
+      else{
+        return generate(gapsOnly, patientId);
+      }
+
+  }
+}
