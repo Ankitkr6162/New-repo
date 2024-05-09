@@ -1,0 +1,120 @@
+package analytics.rcp;
+
+import CwMobile.CwUtils;
+import analytics.HedisRightChartPanel;
+import analytics.rcp.dao.HedisRightChartPanelDao;
+import analytics.rcp.model.MainBody;
+import analytics.rcp.model.Measure;
+import analytics.rcp.model.Program;
+import analytics.rcp.model.SupportingFact;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.stream.Collectors;
+
+import static emr.healowplus.todolist.core.util.TodoContext.isTodoEnabled;
+@Component
+public class UdsMeasures {
+
+    boolean forToDo = false;
+    private final HedisRightChartPanelDao dao;
+
+    private final HedisRightChartPanel hedisRightChartPanel;
+
+
+    public UdsMeasures(HedisRightChartPanelDao dao, HedisRightChartPanel hedisRightChartPanel) {
+        this.dao = dao;
+        this.hedisRightChartPanel = hedisRightChartPanel;
+    }
+
+    public UdsMeasures() {
+        this.dao = new HedisRightChartPanelDao();
+        this.hedisRightChartPanel = new HedisRightChartPanel();
+    }
+
+
+    public String getUdsMeasures(boolean gapsOnly, int patientId){
+        MainBody mainBody = null;
+        if ("yes".equalsIgnoreCase(CwUtils.getItemKeyValue(null, "pophealth_hedis")) && isTodoEnabled()){
+            String resp = hedisRightChartPanel.generate(gapsOnly, patientId);
+            Gson gson = new GsonBuilder().setPrettyPrinting().create();
+            mainBody = gson.fromJson(resp, MainBody.class);
+            if(checkUDS()) {
+                if (gapsOnly) {
+                    List<Program> udsPrograms = setUdsPrograms(patientId, true);
+                    List<Program> mainPrograms = mainBody.getPrograms();
+                    udsPrograms.get(0).setMeasures(udsPrograms.get(0).getMeasures().stream().filter(measure -> measure.getOutcome().equals(("NOT_ACHIEVED"))).collect(Collectors.toList()));
+                    udsPrograms.forEach(mainPrograms::add);
+                    mainBody.setPrograms(mainPrograms);
+                } else {
+                    List<Program> udsPrograms = setUdsPrograms(patientId, true);
+                    List<Program> mainPrograms = mainBody.getPrograms();
+                    udsPrograms.stream().forEach(mainPrograms::add);
+                    mainBody.setPrograms(mainPrograms);
+                }
+            }
+        }
+        else if("no".equalsIgnoreCase(CwUtils.getItemKeyValue(null, "pophealth_hedis")) && isTodoEnabled()){
+            if(checkUDS()) {
+                if (gapsOnly) {
+                    mainBody = new MainBody();
+                    List<Program> udsPrograms = setUdsPrograms(patientId, forToDo);
+                    udsPrograms.get(0).setMeasures(udsPrograms.get(0).getMeasures().stream().filter(measure -> measure.getOutcome().equals(("NOT_ACHIEVED"))).collect(Collectors.toList()));
+                    mainBody.setPrograms(udsPrograms);
+                } else {
+                    mainBody = new MainBody();
+                    List<Program> udsPrograms = setUdsPrograms(patientId, forToDo);
+                    mainBody.setPrograms(udsPrograms);
+                }
+            }
+        }
+        String response = new GsonBuilder()
+                .excludeFieldsWithoutExposeAnnotation()
+                .serializeNulls()
+                .create()
+                .toJson(mainBody);
+        return response;
+    }
+
+
+    public List<Program> setUdsPrograms(int patientId , boolean forTodo){
+        List<Program> udsPrograms =  dao.generateUDSProgram();
+//    int active = dao.getUdsActiveStatus();
+//    String itemKeyValue = dao.getItemKeyValue();
+//    if ((active == 1 && "yes".equalsIgnoreCase(itemKeyValue)) && forTodo) {
+        if (forTodo){
+            Optional<List<Measure>> udsMeasures = Optional.ofNullable(dao.generateUDSMeasure(patientId));
+            Optional<Map<String, List<SupportingFact>>> udsMeasureSupportingFacts = Optional.ofNullable( dao.generateUDSMeasureSupportingFacts(patientId));
+            if(udsMeasures.isPresent() && udsMeasureSupportingFacts.isPresent()) {
+                for (Measure measure : udsMeasures.get()) {
+                    List<SupportingFact> measureSuportingFacts = udsMeasureSupportingFacts.get().get(measure.getName());
+                    measure.setSupportingFacts(measureSuportingFacts);
+                }
+                if (udsPrograms != null) {
+                    for (Program program : udsPrograms) {
+                        program.setMeasures(udsMeasures.get());
+                    }
+                }
+            }
+        }else{
+            udsPrograms = new ArrayList<>();
+        }
+        return udsPrograms;
+    }
+
+
+    public boolean checkUDS() {
+        int active = dao.getUdsActiveStatus();
+        String itemKeyValue = dao.getItemKeyValue();
+        return active == 1 && "yes".equalsIgnoreCase(itemKeyValue);
+    }
+
+
+}
+
